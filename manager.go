@@ -24,6 +24,7 @@ type (
 		creationWait sync.WaitGroup
 		destroyed    bool
 		keepAlive    *time.Timer
+		done         chan struct{}
 		swapping     bool
 	}
 )
@@ -44,6 +45,7 @@ func NewSessionManager(connector connector.Connector, authKeyID uint16, password
 		authKeyID: authKeyID,
 		password:  password,
 		destroyed: false,
+		done:      make(chan struct{}),
 	}
 
 	err := manager.swapSession()
@@ -58,7 +60,16 @@ func NewSessionManager(connector connector.Connector, authKeyID uint16, password
 }
 
 func (s *SessionManager) pingRoutine() {
-	for range s.keepAlive.C {
+	// Exit when Destroy closes s.done. time.Timer.Stop alone does not
+	// close keepAlive.C, so a bare `for range s.keepAlive.C` would
+	// block forever after Destroy.
+	for {
+		select {
+		case <-s.done:
+			return
+		case <-s.keepAlive.C:
+		}
+
 		command, _ := commands.CreateEchoCommand(echoPayload)
 
 		resp, err := s.SendEncryptedCommand(command)
@@ -150,12 +161,17 @@ func (s *SessionManager) SendCommand(c *commands.CommandMessage) (commands.Respo
 	return s.session.SendCommand(c)
 }
 
-// Destroy closes all connections in the pool.
-// SessionManager instances can't be reused.
+// Destroy closes all connections in the pool and terminates the
+// keep-alive goroutine. SessionManager instances can't be reused.
+// Calling Destroy more than once is a no-op.
 func (s *SessionManager) Destroy() {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 
+	if s.destroyed {
+		return
+	}
+	close(s.done)
 	s.keepAlive.Stop()
 	s.session.Close()
 	s.destroyed = true
