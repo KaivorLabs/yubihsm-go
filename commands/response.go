@@ -219,6 +219,13 @@ func parseErrorResponse(payload []byte) error {
 }
 
 func parseSessionMessage(payload []byte) (Response, error) {
+	// SessionID (1) + MAC (8); EncryptedData may be empty. Guard before
+	// slicing so a malformed or truncated connector response returns an error
+	// instead of panicking with an out-of-range slice (the payload is not yet
+	// MAC-verified at this point).
+	if len(payload) < 9 {
+		return nil, errors.New("invalid session message payload length")
+	}
 	return &SessionMessageResponse{
 		SessionID:     payload[0],
 		EncryptedData: payload[1 : len(payload)-8],
@@ -227,6 +234,10 @@ func parseSessionMessage(payload []byte) (Response, error) {
 }
 
 func parseDeviceInfoResponse(payload []byte) (Response, error) {
+	// Reads payload[3:7] and payload[9:]; guard before slicing.
+	if len(payload) < 9 {
+		return nil, errors.New("invalid device info payload length")
+	}
 	var serialNumber uint32
 	err := binary.Read(bytes.NewReader(payload[3:7]), binary.BigEndian, &serialNumber)
 	if err != nil {
