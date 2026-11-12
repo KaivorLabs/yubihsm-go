@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/certusone/yubihsm-go/commands"
@@ -25,7 +26,10 @@ type (
 		destroyed    bool
 		keepAlive    *time.Timer
 		done         chan struct{}
-		swapping     bool
+		// swapping is 1 while swapSession runs; it is read and written
+		// only through sync/atomic, by the keep-alive goroutine and by
+		// the goroutine checkSessionHealth starts.
+		swapping int32
 	}
 )
 
@@ -74,17 +78,12 @@ func (s *SessionManager) pingRoutine() {
 
 		resp, err := s.SendEncryptedCommand(command)
 		if err == nil {
-			parsedResp, matched := resp.(*commands.EchoResponse)
-			if !matched {
-				err = errors.New("invalid response type")
-			}
-			if !bytes.Equal(parsedResp.Data, echoPayload) {
-				err = errors.New("echoed data is invalid")
-			}
-		} else {
-			// Session seems to be dead - reconnect and swap
-			err = s.swapSession()
-			if err != nil {
+			err = checkEcho(resp)
+		}
+		if err != nil {
+			// The session is dead or answered with something other than
+			// the echo: reconnect and swap.
+			if err := s.swapSession(); err != nil {
 				log.Printf("swapping dead session failed; err=%v", err)
 			}
 		}
@@ -93,10 +92,27 @@ func (s *SessionManager) pingRoutine() {
 	}
 }
 
+// checkEcho reports whether resp is the keep-alive echo. A response of
+// any other type, nil included, is an error, never a dereference.
+func checkEcho(resp commands.Response) error {
+	echo, ok := resp.(*commands.EchoResponse)
+	if !ok || echo == nil {
+		return errors.New("invalid response type")
+	}
+	if !bytes.Equal(echo.Data, echoPayload) {
+		return errors.New("echoed data is invalid")
+	}
+	return nil
+}
+
+// swapSession opens and authenticates a new session and replaces the
+// current one with it. One swap runs at a time: a call made while
+// another is running returns nil and leaves the replacement to it.
 func (s *SessionManager) swapSession() error {
-	// Lock swapping process
-	s.swapping = true
-	defer func() { s.swapping = false }()
+	if !atomic.CompareAndSwapInt32(&s.swapping, 0, 1) {
+		return nil
+	}
+	defer atomic.StoreInt32(&s.swapping, 0)
 
 	newSession, err := securechannel.NewSecureChannel(s.connector, s.authKeyID, s.password)
 	if err != nil {
@@ -122,7 +138,7 @@ func (s *SessionManager) swapSession() error {
 }
 
 func (s *SessionManager) checkSessionHealth() {
-	if s.session.Counter >= securechannel.MaxMessagesPerSession*0.9 && !s.swapping {
+	if s.session.Counter >= securechannel.MaxMessagesPerSession*0.9 && atomic.LoadInt32(&s.swapping) == 0 {
 		go s.swapSession()
 	}
 }
