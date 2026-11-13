@@ -127,17 +127,43 @@ type (
 		ObjectType uint8
 		ObjectID   uint16
 	}
+
+	GenerateWrapKeyResponse struct {
+		KeyID uint16
+	}
+
+	WrapDataResponse struct {
+		Nonce []byte
+		// Data contains the encrypted leading zero byte, wrapped plaintext,
+		// and the trailing AES-CCM MAC. It can be passed unchanged to
+		// CreateUnwrapDataCommand together with Nonce.
+		Data []byte
+	}
+
+	UnwrapDataResponse struct {
+		Data []byte
+	}
 )
 
-// ParseResponse parses the binary response from the card to the relevant Response type.
-// If the response is an error zu parses the Error type response and returns an error of the
-// type commands.Error with the parsed error message.
+// ParseResponse parses a binary response into the corresponding response type.
+// Card error responses are returned as *Error.
 func ParseResponse(data []byte) (Response, error) {
 	if len(data) < 3 {
 		return nil, errors.New("invalid response")
 	}
+	if len(data) > MaxMessageLength {
+		return nil, errors.New("response frame exceeds the HSM message length limit")
+	}
 
-	transactionType := CommandType(data[0] + ResponseCommandOffset)
+	var transactionType CommandType
+	switch responseType := data[0]; {
+	case responseType == byte(ErrorResponseCode-ResponseCommandOffset):
+		transactionType = ErrorResponseCode
+	case responseType >= ResponseCommandOffset:
+		transactionType = CommandType(responseType - ResponseCommandOffset)
+	default:
+		return nil, errors.New("invalid response command code")
+	}
 
 	var payloadLength uint16
 	err := binary.Read(bytes.NewReader(data[1:3]), binary.BigEndian, &payloadLength)
@@ -149,14 +175,27 @@ func ParseResponse(data []byte) (Response, error) {
 	if len(payload) != int(payloadLength) {
 		return nil, errors.New("response payload length does not equal the given length")
 	}
+	if transactionType == CommandTypeSessionMessage {
+		if len(payload) > 1+MaxSessionMessageDataLength+SessionMACLength {
+			return nil, errors.New("session response exceeds the HSM message length limit")
+		}
+	}
+	// Response values may retain payload slices. Copy only after validating the
+	// declared length so malformed oversized input is rejected without a large
+	// allocation, while valid parsed responses own their payload memory.
+	// Preserve the historical non-nil empty payload (including its JSON
+	// representation) while detaching it from the caller's input buffer.
+	ownedPayload := make([]byte, len(payload))
+	copy(ownedPayload, payload)
+	payload = ownedPayload
 
 	switch transactionType {
 	case CommandTypeDeviceInfo:
 		return parseDeviceInfoResponse(payload)
 	case CommandTypeCreateSession:
 		return parseCreateSessionResponse(payload)
-	case CommandTypeAuthenticateSession:
-		return nil, nil
+	case CommandTypeAuthenticateSession, CommandTypeCloseSession, CommandTypeDeleteObject, CommandTypeReset:
+		return parseEmptyResponse(payload)
 	case CommandTypeSessionMessage:
 		return parseSessionMessage(payload)
 	case CommandTypeGenerateAsymmetricKey:
@@ -173,12 +212,8 @@ func ParseResponse(data []byte) (Response, error) {
 		return parseListObjectsResponse(payload)
 	case CommandTypeGetObjectInfo:
 		return parseGetObjectInfoResponse(payload)
-	case CommandTypeCloseSession:
-		return nil, nil
 	case CommandTypeGetPubKey:
 		return parseGetPubKeyResponse(payload)
-	case CommandTypeDeleteObject:
-		return nil, nil
 	case CommandTypeEcho:
 		return parseEchoResponse(payload)
 	case CommandTypeDeriveEcdh:
@@ -201,11 +236,24 @@ func ParseResponse(data []byte) (Response, error) {
 		return parseExportWrappedResponse(payload)
 	case CommandTypeImportWrapped:
 		return parseImportWrappedResponse(payload)
+	case CommandTypeGenerateWrapKey:
+		return parseGenerateWrapKeyResponse(payload)
+	case CommandTypeWrapData:
+		return parseWrapDataResponse(payload)
+	case CommandTypeUnwrapData:
+		return parseUnwrapDataResponse(payload)
 	case ErrorResponseCode:
 		return nil, parseErrorResponse(payload)
 	default:
 		return nil, errors.New("response type unknown / not implemented")
 	}
+}
+
+func parseEmptyResponse(payload []byte) (Response, error) {
+	if len(payload) != 0 {
+		return nil, errors.New("invalid response payload length")
+	}
+	return nil, nil
 }
 
 func parseErrorResponse(payload []byte) error {
@@ -223,13 +271,16 @@ func parseSessionMessage(payload []byte) (Response, error) {
 	// slicing so a malformed or truncated connector response returns an error
 	// instead of panicking with an out-of-range slice (the payload is not yet
 	// MAC-verified at this point).
-	if len(payload) < 9 {
+	if len(payload) < 1+SessionMACLength {
 		return nil, errors.New("invalid session message payload length")
+	}
+	if payload[0] > MaxSessionID {
+		return nil, errors.New("invalid session ID")
 	}
 	return &SessionMessageResponse{
 		SessionID:     payload[0],
-		EncryptedData: payload[1 : len(payload)-8],
-		MAC:           payload[len(payload)-8:],
+		EncryptedData: payload[1 : len(payload)-SessionMACLength],
+		MAC:           payload[len(payload)-SessionMACLength:],
 	}, nil
 }
 
@@ -250,18 +301,22 @@ func parseDeviceInfoResponse(payload []byte) (Response, error) {
 	}
 
 	return &DeviceInfoResponse{
-		MajorVersion: payload[0],
-		MinorVersion: payload[1],
-		BuildVersion: payload[2],
-		SerialNumber: serialNumber,
-		LogTotal: payload[7],
-		LogUsed: payload[8],
+		MajorVersion:        payload[0],
+		MinorVersion:        payload[1],
+		BuildVersion:        payload[2],
+		SerialNumber:        serialNumber,
+		LogTotal:            payload[7],
+		LogUsed:             payload[8],
 		SupportedAlgorithms: supportedAlgorithms,
 	}, nil
 }
+
 func parseCreateSessionResponse(payload []byte) (Response, error) {
 	if len(payload) != 17 {
 		return nil, errors.New("invalid response payload length")
+	}
+	if payload[0] > MaxSessionID {
+		return nil, errors.New("invalid session ID")
 	}
 
 	return &CreateSessionResponse{
@@ -277,7 +332,7 @@ func parseCreateAsymmetricKeyResponse(payload []byte) (Response, error) {
 	}
 
 	var keyID uint16
-	err := binary.Read(bytes.NewReader(payload[1:3]), binary.BigEndian, &keyID)
+	err := binary.Read(bytes.NewReader(payload), binary.BigEndian, &keyID)
 	if err != nil {
 		return nil, err
 	}
@@ -288,6 +343,10 @@ func parseCreateAsymmetricKeyResponse(payload []byte) (Response, error) {
 }
 
 func parseSignDataEddsaResponse(payload []byte) (Response, error) {
+	const ed25519SignatureLength = 64
+	if len(payload) != ed25519SignatureLength {
+		return nil, errors.New("invalid response payload length")
+	}
 	return &SignDataEddsaResponse{
 		Signature: payload,
 	}, nil
@@ -304,6 +363,9 @@ func parseSignDataPkcs1Response(payload []byte) (Response, error) {
 }
 
 func parseSignDataEcdsaResponse(payload []byte) (Response, error) {
+	if len(payload) == 0 {
+		return nil, errors.New("invalid response payload length")
+	}
 	return &SignDataEcdsaResponse{
 		Signature: payload,
 	}, nil
@@ -344,6 +406,9 @@ func parseListObjectsResponse(payload []byte) (Response, error) {
 
 func parseGetObjectInfoResponse(payload []byte) (Response, error) {
 	response := ObjectInfoResponse{}
+	if len(payload) != binary.Size(response) {
+		return nil, errors.New("invalid response payload length")
+	}
 
 	err := binary.Read(bytes.NewReader(payload), binary.BigEndian, &response)
 	if err != nil {
@@ -354,7 +419,7 @@ func parseGetObjectInfoResponse(payload []byte) (Response, error) {
 }
 
 func parseGetPubKeyResponse(payload []byte) (Response, error) {
-	if len(payload) < 1 {
+	if len(payload) < 2 {
 		return nil, errors.New("invalid response payload length")
 	}
 	return &GetPubKeyResponse{
@@ -370,6 +435,9 @@ func parseEchoResponse(payload []byte) (Response, error) {
 }
 
 func parseDeriveEcdhResponse(payload []byte) (Response, error) {
+	if len(payload) == 0 {
+		return nil, errors.New("invalid response payload length")
+	}
 	return &DeriveEcdhResponse{
 		XCoordinate: payload,
 	}, nil
@@ -437,10 +505,6 @@ func parsePutOpaqueResponse(payload []byte) (Response, error) {
 }
 
 func parseGetOpaqueResponse(payload []byte) (Response, error) {
-	if len(payload) < 1 {
-		return nil, errors.New("invalid response payload length")
-	}
-
 	return &GetOpaqueResponse{
 		Data: payload,
 	}, nil
@@ -457,13 +521,13 @@ func parseAttestationCertResponse(payload []byte) (Response, error) {
 }
 
 func parseExportWrappedResponse(payload []byte) (Response, error) {
-	if len(payload) < 13 {
+	if len(payload) < WrapNonceLength+WrapIdentifierLength+WrapMACLength {
 		return nil, errors.New("invalid response payload length")
 	}
 
 	return &ExportWrappedResponse{
-		Nonce: payload[:13],
-		Data:  payload[13:],
+		Nonce: payload[:WrapNonceLength],
+		Data:  payload[WrapNonceLength:],
 	}, nil
 }
 
@@ -481,6 +545,37 @@ func parseImportWrappedResponse(payload []byte) (Response, error) {
 	return &ImportWrappedResponse{
 		ObjectType: uint8(payload[0]),
 		ObjectID:   objID,
+	}, nil
+}
+
+func parseGenerateWrapKeyResponse(payload []byte) (Response, error) {
+	if len(payload) != 2 {
+		return nil, errors.New("invalid response payload length")
+	}
+
+	var keyID uint16
+	err := binary.Read(bytes.NewReader(payload), binary.BigEndian, &keyID)
+	if err != nil {
+		return nil, err
+	}
+	return &GenerateWrapKeyResponse{KeyID: keyID}, nil
+}
+
+func parseWrapDataResponse(payload []byte) (Response, error) {
+	minimumLength := WrapNonceLength + WrapDataPrefixLength + WrapMACLength
+	if len(payload) < minimumLength {
+		return nil, errors.New("invalid response payload length")
+	}
+
+	return &WrapDataResponse{
+		Nonce: payload[:WrapNonceLength],
+		Data:  payload[WrapNonceLength:],
+	}, nil
+}
+
+func parseUnwrapDataResponse(payload []byte) (Response, error) {
+	return &UnwrapDataResponse{
+		Data: payload,
 	}, nil
 }
 
@@ -524,8 +619,10 @@ func (e *Error) Error() string {
 		message = "Demo mode"
 	case ErrorCodeObjectExists:
 		message = "Object exists"
+	case ErrorCodeAlgorithmDisabled:
+		message = "Algorithm disabled"
 	default:
-		message = "Unknown"
+		message = fmt.Sprintf("Unknown (0x%02x)", uint8(e.Code))
 	}
 
 	return fmt.Sprintf("card responded with error: %s", message)

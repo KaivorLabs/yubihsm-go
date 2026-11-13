@@ -10,8 +10,27 @@ const (
 	ResponseCommandOffset = 0x80
 	ErrorResponseCode     = 0xff
 
-	// LabelLength is the max length of a label
+	// LabelLength is the maximum length of an object label.
 	LabelLength = 40
+
+	// WrapNonceLength is the AES-CCM nonce length used by wrap commands.
+	WrapNonceLength = 13
+	// WrapMACLength is the AES-CCM authentication tag length used by wrap commands.
+	WrapMACLength = 16
+	// WrapIdentifierLength is the one-byte identifier included in AES-CCM wrapped objects.
+	WrapIdentifierLength = 1
+	// WrapDataPrefixLength is the encrypted leading zero byte added by WRAP DATA.
+	WrapDataPrefixLength = 1
+	// MaxSessionID is the largest valid YubiHSM session identifier.
+	MaxSessionID = 15
+	// SessionMACLength is the truncated SCP03 command and response MAC length.
+	SessionMACLength = 8
+	// MaxMessageLength is the maximum complete wire frame on firmware 2.4+.
+	// Earlier firmware limits frames to 2048 bytes.
+	MaxMessageLength = 3136
+	// MaxCommandDataLength is the maximum inner payload of a secure message:
+	// leave room for the inner header and at least one byte of SCP03 padding.
+	MaxCommandDataLength = MaxSessionMessageDataLength - 3 - 1
 
 	CommandTypeEcho                    CommandType = 0x01
 	CommandTypeCreateSession           CommandType = 0x03
@@ -81,6 +100,7 @@ const (
 	ErrorCodeInvalidOTP               ErrorCode = 0x0f
 	ErrorCodeDemoMode                 ErrorCode = 0x10
 	ErrorCodeObjectExists             ErrorCode = 0x11
+	ErrorCodeAlgorithmDisabled        ErrorCode = 0x12
 	ErrorCodeCommandUnexecuted        ErrorCode = 0xff
 
 	// Algorithms
@@ -219,10 +239,10 @@ const (
 	ListObjectParamLabel        uint8 = 0x06
 )
 
-// CapabilityPrimitiveFromSlice OR's all the capabilitites together.
-func CapabilityPrimitiveFromSlice(capabilitites []uint64) uint64 {
+// CapabilityPrimitiveFromSlice ORs all capabilities together.
+func CapabilityPrimitiveFromSlice(capabilities []uint64) uint64 {
 	var primitive uint64
-	for _, c := range capabilitites {
+	for _, c := range capabilities {
 		primitive |= c
 	}
 	return primitive

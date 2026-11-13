@@ -1,0 +1,307 @@
+--- a/commands/constructors.go
++++ b/commands/constructors.go
+@@ -184,6 +184,22 @@
+ 	}
+ }
+ 
++// NewCapabilitiesOption filters listed objects by capabilities.
++func NewCapabilitiesOption(capabilities uint64) ListCommandOption {
++	return func(w io.Writer) {
++		binary.Write(w, binary.BigEndian, ListObjectParamCapabilities)
++		binary.Write(w, binary.BigEndian, capabilities)
++	}
++}
++
++// NewAlgorithmOption filters listed objects by algorithm.
++func NewAlgorithmOption(algorithm Algorithm) ListCommandOption {
++	return func(w io.Writer) {
++		binary.Write(w, binary.BigEndian, ListObjectParamAlgorithm)
++		binary.Write(w, binary.BigEndian, algorithm)
++	}
++}
++
+ func NewLabelOption(label []byte) (ListCommandOption, error) {
+ 	label, err := padLabel(label)
+ 	if err != nil {
+@@ -350,6 +366,13 @@
+ 	return command
+ }
+ 
++// CreatePutWrapKeyCommand creates a command that imports a Wrap Key.
++func CreatePutWrapKeyCommand(objID uint16, label []byte, domains uint16, capabilities uint64, algorithm Algorithm, delegated uint64, wrapkey []byte) (*CommandMessage, error) {
++	return CreatePutWrapkeyCommand(objID, label, domains, capabilities, algorithm, delegated, wrapkey)
++}
++
++// CreatePutWrapkeyCommand is retained for compatibility. New code should use
++// CreatePutWrapKeyCommand.
+ func CreatePutWrapkeyCommand(objID uint16, label []byte, domains uint16, capabilities uint64, algorithm Algorithm, delegated uint64, wrapkey []byte) (*CommandMessage, error) {
+ 	label, err := padLabel(label)
+ 	if err != nil {
+@@ -402,6 +425,13 @@
+ 	return command, nil
+ }
+ 
++// CreatePutAuthKeyCommand creates a command that imports an Authentication Key.
++func CreatePutAuthKeyCommand(objID uint16, label []byte, domains uint16, capabilities, delegated uint64, encKey, macKey []byte) (*CommandMessage, error) {
++	return CreatePutAuthkeyCommand(objID, label, domains, capabilities, delegated, encKey, macKey)
++}
++
++// CreatePutAuthkeyCommand is retained for compatibility. New code should use
++// CreatePutAuthKeyCommand.
+ func CreatePutAuthkeyCommand(objID uint16, label []byte, domains uint16, capabilities, delegated uint64, encKey, macKey []byte) (*CommandMessage, error) {
+ 	label, err := padLabel(label)
+ 	if err != nil {
+@@ -443,7 +473,7 @@
+ 			authKey[i] = 0
+ 		}
+ 	}()
+-	return CreatePutAuthkeyCommand(objID, label, domains, capabilities, delegated, authKey.GetEncKey(), authKey.GetMacKey())
++	return CreatePutAuthKeyCommand(objID, label, domains, capabilities, delegated, authKey.GetEncKey(), authKey.GetMacKey())
+ }
+ 
+ func CreateSignAttestationCertCommand(keyObjID, attestationObjID uint16) (*CommandMessage, error) {
+--- a/commands/response.go
++++ b/commands/response.go
+@@ -105,6 +105,10 @@
+ 	PutAuthkeyResponse struct {
+ 		ObjectID uint16
+ 	}
++
++	// Correctly cased aliases; the original names remain for compatibility.
++	PutWrapKeyResponse = PutWrapkeyResponse
++	PutAuthKeyResponse = PutAuthkeyResponse
+ 
+ 	PutOpaqueResponse struct {
+ 		ObjectID uint16
+--- a/commands/types.go
++++ b/commands/types.go
+@@ -38,6 +38,7 @@
+ 	CommandTypeSessionMessage          CommandType = 0x05
+ 	CommandTypeDeviceInfo              CommandType = 0x06
+ 	CommandTypeReset                   CommandType = 0x08
++	CommandTypeGetDevicePubKey         CommandType = 0x0a
+ 	CommandTypeCloseSession            CommandType = 0x40
+ 	CommandTypeStorageStatus           CommandType = 0x41
+ 	CommandTypePutOpaque               CommandType = 0x42
+@@ -68,6 +69,9 @@
+ 	CommandTypeGenerateHMACKey         CommandType = 0x5a
+ 	CommandTypeGenerateWrapKey         CommandType = 0x5b
+ 	CommandTypeVerifyHMAC              CommandType = 0x5c
++	CommandTypeSignSSHCertificate      CommandType = 0x5d
++	CommandTypePutTemplate             CommandType = 0x5e
++	CommandTypeGetTemplate             CommandType = 0x5f
+ 	CommandTypeOTPDecrypt              CommandType = 0x60
+ 	CommandTypeOTPAeadCreate           CommandType = 0x61
+ 	CommandTypeOTPAeadRandom           CommandType = 0x62
+@@ -81,6 +85,17 @@
+ 	CommandTypeSignDataEddsa           CommandType = 0x6a
+ 	CommandTypeSetBlink                CommandType = 0x6b
+ 	CommandTypeChangeAuthenticationKey CommandType = 0x6c
++	CommandTypePutSymmetricKey         CommandType = 0x6d
++	CommandTypeGenerateSymmetricKey    CommandType = 0x6e
++	CommandTypeDecryptECB              CommandType = 0x6f
++	CommandTypeEncryptECB              CommandType = 0x70
++	CommandTypeDecryptCBC              CommandType = 0x71
++	CommandTypeEncryptCBC              CommandType = 0x72
++	CommandTypePutPublicWrapKey        CommandType = 0x73
++	CommandTypeGetRSAWrappedKey        CommandType = 0x74
++	CommandTypePutRSAWrappedKey        CommandType = 0x75
++	CommandTypeExportRSAWrapped        CommandType = 0x76
++	CommandTypeImportRSAWrapped        CommandType = 0x77
+ 
+ 	// Errors
+ 	ErrorCodeOK                       ErrorCode = 0x00
+@@ -104,53 +119,63 @@
+ 	ErrorCodeCommandUnexecuted        ErrorCode = 0xff
+ 
+ 	// Algorithms
+-	AlgorithmRSAPKCS1SHA1            Algorithm = 1
+-	AlgorithmRSAPKCS1SHA256          Algorithm = 2
+-	AlgorithmRSAPKCS1SHA384          Algorithm = 3
+-	AlgorithmRSAPKCS1SHA512          Algorithm = 4
+-	AlgorithmRSAPSSSHA1              Algorithm = 5
+-	AlgorithmRSAPSSSHA256            Algorithm = 6
+-	AlgorithmRSAPSSSHA384            Algorithm = 7
+-	AlgorithmRSAPSSSHA512            Algorithm = 8
+-	AlgorithmRSA2048                 Algorithm = 9
+-	AlgorithmRSA3072                 Algorithm = 10
+-	AlgorithmRSA4096                 Algorithm = 11
+-	AlgorithmP256                    Algorithm = 12
+-	AlgorithmP384                    Algorithm = 13
+-	AlgorithmP521                    Algorithm = 14
+-	AlgorithmSecp256k1               Algorithm = 15
+-	AlgorithmECBP256                 Algorithm = 16
+-	AlgorithmECBP384                 Algorithm = 17
+-	AlgorithmECBP512                 Algorithm = 18
+-	AlgorithmHMACSHA1                Algorithm = 19
+-	AlgorithmHMACSHA256              Algorithm = 20
+-	AlgorithmHMACSHA384              Algorithm = 21
+-	AlgorithmHMACSHA512              Algorithm = 22
+-	AlgorithmECECDSASHA1             Algorithm = 23
+-	AlgorithmECECDH                  Algorithm = 24
+-	AlgorithmRSAOAEPSHA1             Algorithm = 25
+-	AlgorithmRSAOAEPSHA256           Algorithm = 26
+-	AlgorithmRSAOAEPSHA384           Algorithm = 27
+-	AlgorithmRSAOAEPSHA512           Algorithm = 28
+-	AlgorithmAES128CCMWrap           Algorithm = 29
+-	AlgorithmOpaqueData              Algorithm = 30
+-	AlgorithmOpaqueX509Certificate   Algorithm = 31
+-	AlgorithmRSAMGF1SHA1             Algorithm = 32
+-	AlgorithmRSAMGF1SHA256           Algorithm = 33
+-	AlgorithmRSAMGF1SHA384           Algorithm = 34
+-	AlgorithmRSAMGF1SHA512           Algorithm = 35
+-	AlgorithmTEMPLATESSH             Algorithm = 36
+-	AlgorithmAES128YUBICOOTP         Algorithm = 37
+-	AlgorithmYubicoAESAuthentication Algorithm = 38
+-	AlgorithmAES192YUBICOOTP         Algorithm = 39
+-	AlgorithmAES256YUBICOOTP         Algorithm = 40
+-	AlgorithmAES192CCMWrap           Algorithm = 41
+-	AlgorithmAES256CCMWrap           Algorithm = 42
+-	AlgorithmECECDSASHA256           Algorithm = 43
+-	AlgorithmECECDSASHA384           Algorithm = 44
+-	AlgorithmECECDSASHA512           Algorithm = 45
+-	AlgorithmED25519                 Algorithm = 46
+-	AlgorithmECP224                  Algorithm = 47
++	AlgorithmRSAPKCS1SHA1               Algorithm = 1
++	AlgorithmRSAPKCS1SHA256             Algorithm = 2
++	AlgorithmRSAPKCS1SHA384             Algorithm = 3
++	AlgorithmRSAPKCS1SHA512             Algorithm = 4
++	AlgorithmRSAPSSSHA1                 Algorithm = 5
++	AlgorithmRSAPSSSHA256               Algorithm = 6
++	AlgorithmRSAPSSSHA384               Algorithm = 7
++	AlgorithmRSAPSSSHA512               Algorithm = 8
++	AlgorithmRSA2048                    Algorithm = 9
++	AlgorithmRSA3072                    Algorithm = 10
++	AlgorithmRSA4096                    Algorithm = 11
++	AlgorithmP256                       Algorithm = 12
++	AlgorithmP384                       Algorithm = 13
++	AlgorithmP521                       Algorithm = 14
++	AlgorithmSecp256k1                  Algorithm = 15
++	AlgorithmECBP256                    Algorithm = 16
++	AlgorithmECBP384                    Algorithm = 17
++	AlgorithmECBP512                    Algorithm = 18
++	AlgorithmHMACSHA1                   Algorithm = 19
++	AlgorithmHMACSHA256                 Algorithm = 20
++	AlgorithmHMACSHA384                 Algorithm = 21
++	AlgorithmHMACSHA512                 Algorithm = 22
++	AlgorithmECECDSASHA1                Algorithm = 23
++	AlgorithmECECDH                     Algorithm = 24
++	AlgorithmRSAOAEPSHA1                Algorithm = 25
++	AlgorithmRSAOAEPSHA256              Algorithm = 26
++	AlgorithmRSAOAEPSHA384              Algorithm = 27
++	AlgorithmRSAOAEPSHA512              Algorithm = 28
++	AlgorithmAES128CCMWrap              Algorithm = 29
++	AlgorithmOpaqueData                 Algorithm = 30
++	AlgorithmOpaqueX509Certificate      Algorithm = 31
++	AlgorithmRSAMGF1SHA1                Algorithm = 32
++	AlgorithmRSAMGF1SHA256              Algorithm = 33
++	AlgorithmRSAMGF1SHA384              Algorithm = 34
++	AlgorithmRSAMGF1SHA512              Algorithm = 35
++	AlgorithmTEMPLATESSH                Algorithm = 36
++	AlgorithmAES128YUBICOOTP            Algorithm = 37
++	AlgorithmYubicoAESAuthentication    Algorithm = 38
++	AlgorithmAES128YubicoAuthentication Algorithm = AlgorithmYubicoAESAuthentication
++	AlgorithmAES192YUBICOOTP            Algorithm = 39
++	AlgorithmAES256YUBICOOTP            Algorithm = 40
++	AlgorithmAES192CCMWrap              Algorithm = 41
++	AlgorithmAES256CCMWrap              Algorithm = 42
++	AlgorithmECECDSASHA256              Algorithm = 43
++	AlgorithmECECDSASHA384              Algorithm = 44
++	AlgorithmECECDSASHA512              Algorithm = 45
++	AlgorithmED25519                    Algorithm = 46
++	AlgorithmECP224                     Algorithm = 47
++	AlgorithmRSAPKCS1Decrypt            Algorithm = 48
++	AlgorithmECP256YubicoAuth           Algorithm = 49
++	AlgorithmECP256YubicoAuthentication Algorithm = AlgorithmECP256YubicoAuth
++	AlgorithmAES128                     Algorithm = 50
++	AlgorithmAES192                     Algorithm = 51
++	AlgorithmAES256                     Algorithm = 52
++	AlgorithmAESECB                     Algorithm = 53
++	AlgorithmAESCBC                     Algorithm = 54
++	AlgorithmAESKWP                     Algorithm = 55
+ 
+ 	// Capabilities
+ 	CapabilityNone                    uint64 = 0x0000000000000000
+@@ -202,6 +227,15 @@
+ 	CapabilityDeleteTemplate          uint64 = 0x0000100000000000
+ 	CapabilityDeleteOtpAeadKey        uint64 = 0x0000200000000000
+ 	CapabilityChangeAuthenticationKey uint64 = 0x0000400000000000
++	CapabilityPutSymmetricKey         uint64 = 0x0000800000000000
++	CapabilityGenerateSymmetricKey    uint64 = 0x0001000000000000
++	CapabilityDeleteSymmetricKey      uint64 = 0x0002000000000000
++	CapabilityDecryptECB              uint64 = 0x0004000000000000
++	CapabilityEncryptECB              uint64 = 0x0008000000000000
++	CapabilityDecryptCBC              uint64 = 0x0010000000000000
++	CapabilityEncryptCBC              uint64 = 0x0020000000000000
++	CapabilityPutPublicWrapKey        uint64 = 0x0040000000000000
++	CapabilityDeletePublicWrapKey     uint64 = 0x0080000000000000
+ 
+ 	// Domains
+ 	Domain1  uint16 = 0x0001
+@@ -229,6 +263,8 @@
+ 	ObjectTypeHmacKey           uint8 = 0x05
+ 	ObjectTypeTemplate          uint8 = 0x06
+ 	ObjectTypeOtpAeadKey        uint8 = 0x07
++	ObjectTypeSymmetricKey      uint8 = 0x08
++	ObjectTypePublicWrapKey     uint8 = ObjectTypeWrapKey | 0x80
+ 
+ 	// list objects params
+ 	ListObjectParamID           uint8 = 0x01
+--- a/commands/constructors_test.go
++++ b/commands/constructors_test.go
+@@ -30,6 +30,8 @@
+ 		NewObjectTypeOption(ObjectTypeAsymmetricKey),
+ 		NewIDOption(0x1234),
+ 		NewDomainOption(Domain1|Domain2),
++		NewCapabilitiesOption(0x0102030405060708),
++		NewAlgorithmOption(AlgorithmAES256CCMWrap),
+ 		labelOption,
+ 	)
+ 	if err != nil {
+@@ -39,6 +41,8 @@
+ 		ListObjectParamType, ObjectTypeAsymmetricKey,
+ 		ListObjectParamID, 0x12, 0x34,
+ 		ListObjectParamDomains, 0x00, 0x03,
++		ListObjectParamCapabilities, 1, 2, 3, 4, 5, 6, 7, 8,
++		ListObjectParamAlgorithm, byte(AlgorithmAES256CCMWrap),
+ 		ListObjectParamLabel, 'x',
+ 	}
+ 	if len(command.Data) < len(wantPrefix) {
+@@ -159,10 +163,10 @@
+ 		{AlgorithmRSA3072, 384},
+ 		{AlgorithmRSA4096, 512},
+ 	} {
+-		if _, err := CreatePutWrapkeyCommand(1, nil, Domain1, 0, tc.algorithm, 0, make([]byte, tc.keyLength)); err != nil {
++		if _, err := CreatePutWrapKeyCommand(1, nil, Domain1, 0, tc.algorithm, 0, make([]byte, tc.keyLength)); err != nil {
+ 			t.Fatalf("algorithm %d: %v", tc.algorithm, err)
+ 		}
+-		if _, err := CreatePutWrapkeyCommand(1, nil, Domain1, 0, tc.algorithm, 0, make([]byte, tc.keyLength-1)); err == nil {
++		if _, err := CreatePutWrapKeyCommand(1, nil, Domain1, 0, tc.algorithm, 0, make([]byte, tc.keyLength-1)); err == nil {
+ 			t.Fatalf("algorithm %d accepted an invalid key length", tc.algorithm)
+ 		}
+ 	}
+--- a/commands/types_test.go
++++ b/commands/types_test.go
+@@ -10,6 +10,22 @@
+ 	}
+ }
+ 
++func TestCurrentProtocolConstants(t *testing.T) {
++	if CommandTypeGetDevicePubKey != 0x0a || CommandTypeSignSSHCertificate != 0x5d ||
++		CommandTypeImportRSAWrapped != 0x77 {
++		t.Fatal("command constants do not match the YubiHSM protocol")
++	}
++	if AlgorithmRSAPKCS1Decrypt != 48 || AlgorithmECP256YubicoAuth != 49 || AlgorithmAESKWP != 55 {
++		t.Fatal("algorithm constants do not match the YubiHSM protocol")
++	}
++	if CapabilityPutSymmetricKey != uint64(1)<<47 || CapabilityDeletePublicWrapKey != uint64(1)<<55 {
++		t.Fatal("capability constants do not match the YubiHSM protocol")
++	}
++	if ObjectTypeSymmetricKey != 0x08 || ObjectTypePublicWrapKey != 0x84 {
++		t.Fatal("object type constants do not match the YubiHSM protocol")
++	}
++}
++
+ func TestCapabilityPrimitiveFromSlice(t *testing.T) {
+ 	got := CapabilityPrimitiveFromSlice([]uint64{CapabilityWrapData, CapabilityUnwrapData, CapabilityWrapData})
+ 	want := CapabilityWrapData | CapabilityUnwrapData

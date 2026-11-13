@@ -3,6 +3,7 @@ package commands
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 )
 
 type (
@@ -15,38 +16,64 @@ type (
 	}
 )
 
+const (
+	maxCommandBodyLength = 1<<16 - 1
+	// MaxSessionMessageDataLength is the maximum AES-block-aligned ciphertext
+	// after subtracting the outer header, session ID, and truncated MAC.
+	MaxSessionMessageDataLength = (MaxMessageLength - 3 - 1 - SessionMACLength) / 16 * 16
+)
+
+// BodyLength returns the encoded command body length. For an invalid command
+// whose body cannot fit in the protocol's uint16 length field, it returns the
+// largest representable value; Serialize returns the corresponding error.
 func (c *CommandMessage) BodyLength() uint16 {
-	length := len(c.Data)
-
-	if c.MAC != nil {
-		length += len(c.MAC)
+	if c == nil {
+		return 0
 	}
 
+	length := len(c.Data) + len(c.MAC)
 	if c.SessionID != nil {
-		length += 1
+		length++
+	}
+	if length > maxCommandBodyLength {
+		return uint16(maxCommandBodyLength)
 	}
 
-	return uint16(length)
+	return uint16(length) // #nosec G115 -- length is bounded above.
 }
 
 func (c *CommandMessage) Serialize() ([]byte, error) {
-	buffer := new(bytes.Buffer)
-
-	// Write command type
-	binary.Write(buffer, binary.BigEndian, c.CommandType)
-
-	// Write length
-	binary.Write(buffer, binary.BigEndian, uint16(c.BodyLength()))
-
-	// Write sessionID
-	if c.SessionID != nil {
-		binary.Write(buffer, binary.BigEndian, *c.SessionID)
+	if c == nil {
+		return nil, errors.New("command must not be nil")
+	}
+	if c.SessionID != nil && *c.SessionID > MaxSessionID {
+		return nil, errors.New("invalid session ID")
+	}
+	if c.CommandType == CommandTypeSessionMessage {
+		if len(c.Data) > MaxSessionMessageDataLength {
+			return nil, errors.New("session message exceeds the HSM message length limit")
+		}
+	} else if len(c.Data) > MaxMessageLength-3 {
+		return nil, errors.New("command data exceeds the HSM message length limit")
 	}
 
-	// Write data
-	buffer.Write(c.Data)
+	bodyLength := len(c.Data) + len(c.MAC)
+	if c.SessionID != nil {
+		bodyLength++
+	}
+	if bodyLength > MaxMessageLength-3 {
+		return nil, errors.New("command frame exceeds the HSM message length limit")
+	}
 
-	// Write MAC
+	buffer := bytes.NewBuffer(make([]byte, 0, 3+bodyLength))
+	buffer.WriteByte(byte(c.CommandType))
+	if err := binary.Write(buffer, binary.BigEndian, uint16(bodyLength)); err != nil {
+		return nil, err
+	}
+	if c.SessionID != nil {
+		buffer.WriteByte(*c.SessionID)
+	}
+	buffer.Write(c.Data)
 	buffer.Write(c.MAC)
 
 	return buffer.Bytes(), nil

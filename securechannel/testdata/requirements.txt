@@ -1,0 +1,5 @@
+# Development-only oracle generator. Not imported by the Go library or Go tests.
+cryptography==46.0.3
+# Lock the small transitive set too, so oracle regeneration does not float.
+cffi==2.0.0
+pycparser==2.23

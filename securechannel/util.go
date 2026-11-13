@@ -1,40 +1,37 @@
 package securechannel
 
 import (
-	"bytes"
 	"crypto/aes"
+	"errors"
 )
 
-// pad adds a padding to src until using the mechanism specified in SCP03 until it has a len that is a multiple of
-// aes.BlockSize and returns the result
-func pad(src []byte) []byte {
-	if aes.BlockSize-len(src)%aes.BlockSize == 0 {
-		return src
-	}
+var errInvalidPadding = errors.New("invalid SCP03 padding")
 
-	padding := aes.BlockSize - len(src)%aes.BlockSize - 1
-	padtext := bytes.Repeat([]byte{0}, padding)
-	padtext = append([]byte{0x80}, padtext...)
-	return append(src, padtext...)
+// pad applies ISO/IEC 7816-4 padding as required by SCP03. Padding is always
+// added, including a full block when src is already block-aligned.
+func pad(src []byte) []byte {
+	paddingLength := aes.BlockSize - len(src)%aes.BlockSize
+	padded := make([]byte, len(src)+paddingLength)
+	copy(padded, src)
+	padded[len(src)] = 0x80
+	return padded
 }
 
-// unpad removes the padding from src using the mechanism specified in SCP03 and returns the result
-func unpad(src []byte) []byte {
-	if src[len(src)-1] != 0x00 && src[len(src)-1] != 0x80 {
-		return src
+// unpad validates and removes ISO/IEC 7816-4 padding. It rejects empty,
+// non-block-aligned, and malformed input rather than slicing or accepting it.
+func unpad(src []byte) ([]byte, error) {
+	if len(src) == 0 || len(src)%aes.BlockSize != 0 {
+		return nil, errInvalidPadding
 	}
 
-	padLen := 0
-	for i := len(src) - 1; i >= 0; i-- {
-		if src[i] == 0x00 {
-			padLen++
-			continue
-		}
-		if src[i] == 0x80 {
-			padLen++
-			break
-		}
+	marker := len(src) - 1
+	minimumMarker := len(src) - aes.BlockSize
+	for marker >= minimumMarker && src[marker] == 0x00 {
+		marker--
+	}
+	if marker < minimumMarker || src[marker] != 0x80 {
+		return nil, errInvalidPadding
 	}
 
-	return src[:len(src)-padLen]
+	return src[:marker], nil
 }

@@ -1,0 +1,42 @@
+name: Verify refactoring contracts
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  modern-verification:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0 # API comparison uses the recorded upstream baseline.
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: '1.27.3'
+          cache: false
+      - name: Install isolated, pinned development-only oracle dependency
+        run: |
+          python3 -m venv "$RUNNER_TEMP/vector-env"
+          "$RUNNER_TEMP/vector-env/bin/python3" -m pip install -r securechannel/testdata/requirements.txt
+      - name: Race, stress, fuzz, static/security, API, oracle and mutation gates
+        env:
+          GOTOOLCHAIN: local
+          VERIFY_EXTENDED: '1'
+          VERIFY_STRESS: '1'
+          VERIFY_FUZZ: '1'
+        run: |
+          set -euo pipefail
+          export PATH="$RUNNER_TEMP/vector-env/bin:$PATH"
+          bash scripts/verify.sh 2>&1 | tee "$RUNNER_TEMP/verification.log"
+      - name: Preserve exact automated verification output
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: verification-${{ github.sha }}
+          path: ${{ runner.temp }}/verification.log
+          if-no-files-found: warn
+          retention-days: 14

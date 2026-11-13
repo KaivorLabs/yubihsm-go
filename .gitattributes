@@ -1,0 +1,2 @@
+# Unified diff context lines require leading spaces before Go tabs and blank lines.
+docs/deferred/protocol-conveniences.patch -whitespace

@@ -1,6 +1,6 @@
 module github.com/certusone/yubihsm-go
 
-go 1.14
+go 1.27.3
 
 require (
 	github.com/enceve/crypto v0.0.0-20160707101852-34d48bb93815
